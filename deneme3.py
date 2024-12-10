@@ -40,6 +40,7 @@ def load_user(user_id):
 energy_data = []
 time_labels = []
 energy_goal = None
+carbon_emission_rate = 0.5  # kWh başına CO2 emisyonu (örnek)
 
 # Enerji tüketimi simülatörü (sensör yerine)
 def get_energy_data():
@@ -60,7 +61,7 @@ def suggest_savings(energy_data):
             suggestions.append(f"Consider reducing usage at {time_labels[i]} to save energy.")
     return suggestions
 
-# Enerji tüketimi tahmin fonksiyonu (Linear Regression)
+# Enerji tüketimi tahmin fonksiyonu (Lineer Regresyon)
 def predict_energy_usage():
     global energy_data, time_labels
     if len(energy_data) < 2:  # Yeterli veri olmadığında tahmin yapma
@@ -86,12 +87,18 @@ def send_email_notification(subject, body, recipient):
     msg.body = body
     mail.send(msg)
 
+# Karbon ayak izi hesaplama
+def calculate_carbon_footprint(energy_data):
+    return sum(energy_data) * carbon_emission_rate
+
 # Flask route: Ana sayfa
 @app.route("/")
 def dashboard():
     global energy_data, time_labels, energy_goal
     suggestions = suggest_savings(energy_data)
-    return render_template("dashboard.html", energy_data=energy_data, time_labels=time_labels, suggestions=suggestions, energy_goal=energy_goal)
+    carbon_footprint = calculate_carbon_footprint(energy_data)
+    return render_template("dashboard.html", energy_data=energy_data, time_labels=time_labels, 
+                           suggestions=suggestions, energy_goal=energy_goal, carbon_footprint=carbon_footprint)
 
 # Flask route: Verileri grafikte göster
 @app.route("/plot")
@@ -108,30 +115,14 @@ def plot_data():
     plt.close()
     return render_template("plot.html", plot_url="/static/energy_plot.png")
 
-# Flask route: Tasarruf ipuçları ve bildirimler
-@app.route("/savings")
-def savings_tips():
-    global energy_data, time_labels
-    suggestions = suggest_savings(energy_data)
-    return render_template("savings.html", suggestions=suggestions)
-
-# Flask route: Verileri zaman dilimlerine göre göster
-@app.route("/compare", methods=["GET", "POST"])
-def compare_data():
-    if request.method == "POST":
-        start_time = request.form["start_time"]
-        end_time = request.form["end_time"]
-        filtered_data = filter_data_by_time(start_time, end_time)
-        return render_template("compare.html", data=filtered_data)
-    return render_template("compare_form.html")
-
-def filter_data_by_time(start_time, end_time):
-    global energy_data, time_labels
-    filtered_data = []
-    for i, time in enumerate(time_labels):
-        if start_time <= time <= end_time:
-            filtered_data.append((time, energy_data[i]))
-    return filtered_data
+# Flask route: Enerji tahminleri
+@app.route("/predict")
+def predict():
+    predicted_energy = predict_energy_usage()
+    if predicted_energy:
+        return render_template("prediction.html", predictions=predicted_energy)
+    else:
+        return render_template("prediction.html", predictions=["Not enough data for prediction."])
 
 # Flask route: Enerji hedefi belirleme
 @app.route("/set_goal", methods=["POST"])
@@ -151,51 +142,9 @@ def export_data():
             writer.writerow([time_labels[i], energy_data[i]])
     return send_file('exported_data.csv', as_attachment=True)
 
-# Flask route: CSV dosyasından veri yükleme
-@app.route("/load_data", methods=["POST"])
-def load_data():
-    file = request.files['csv_file']
-    data = pd.read_csv(file)
-    time_labels.extend(data['time'].tolist())
-    energy_data.extend(data['energy'].tolist())
-    return render_template("dashboard.html", energy_data=energy_data, time_labels=time_labels)
-
-# Flask route: Enerji verilerini filtreleme
-@app.route("/filter", methods=["GET", "POST"])
-def filter_data():
-    if request.method == "POST":
-        threshold = float(request.form["threshold"])
-        global energy_data, time_labels
-        filtered_data = [(time, energy) for time, energy in zip(time_labels, energy_data) if energy >= threshold]
-        time_labels, energy_data = zip(*filtered_data)  # Filtrelenmiş veriyi kaydet
-        return render_template("filtered_data.html", filtered_data=filtered_data)
-    return render_template("filter_form.html")
-
-# Flask route: Enerji tahminleri
-@app.route("/predict")
-def predict():
-    predicted_energy = predict_energy_usage()
-    if predicted_energy:
-        return render_template("prediction.html", predictions=predicted_energy)
-    else:
-        return render_template("prediction.html", predictions=["Not enough data for prediction."])
-
-# Flask route: E-posta bildirimi kontrolü
-@app.route("/check_goal")
-def check_goal():
-    global energy_goal, energy_data
-    if energy_goal and max(energy_data) > energy_goal:
-        send_email_notification(
-            "Energy Usage Alert",
-            f"Your energy consumption has exceeded the target of {energy_goal} kWh.",
-            "recipient-email@example.com"
-        )
-        return "Goal exceeded. Notification sent!"
-    return "Energy consumption within the target range."
-
 # Gerçek zamanlı veri toplama (arka planda çalıştırılabilir)
 def collect_data():
-    global energy_data, time_labels
+    global energy_data, time_labels, energy_goal
     while True:
         current_time = time.strftime("%H:%M:%S")
         energy = get_energy_data()
@@ -203,6 +152,14 @@ def collect_data():
         time_labels.append(current_time)
         save_to_csv([current_time, energy])  # Veriyi kaydet
         print(f"Collected Data: {current_time} - {energy} kWh")
+
+        # Enerji limiti aşıldığında bildirim gönderme
+        if energy_goal and energy > energy_goal:
+            send_email_notification(
+                "Energy Usage Alert",
+                f"Your energy consumption has exceeded the target of {energy_goal} kWh. Current usage: {energy} kWh.",
+                "recipient-email@example.com"
+            )
         time.sleep(10)  # Her 10 saniyede bir veri toplar
 
 # Flask uygulamasını başlatma
